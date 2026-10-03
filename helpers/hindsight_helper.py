@@ -419,26 +419,38 @@ async def recall_memories(context: "AgentContext", query: str, agent: Any = None
             budget=config.get("hindsight_recall_budget", "mid"),
         )
 
-        # Extract text content from recall response
-        if hasattr(result, "content") and result.content:
-            return result.content
-        elif hasattr(result, "text") and result.text:
-            return result.text
-        elif hasattr(result, "facts") and result.facts:
-            # Format facts into readable text
-            facts_text = []
-            for fact in result.facts:
-                if hasattr(fact, "content"):
-                    facts_text.append(fact.content)
-                elif hasattr(fact, "text"):
-                    facts_text.append(fact.text)
-                else:
-                    facts_text.append(str(fact))
-            return "\n".join(facts_text) if facts_text else None
-        else:
-            # Try converting to string as last resort
-            result_str = str(result)
-            return result_str if result_str and result_str != "None" else None
+        # Extract text content from recall response.
+        # RecallResponse exposes `results` (list of RecallResult with .text).
+        # See hindsight_client_api.models.recall_response.RecallResponse.
+        results = getattr(result, "results", None)
+        if results:
+            lines = []
+            max_memories = int(config.get("hindsight_recall_max_memories", 50))  # tunable via plugin settings/config.json
+            for item in results[:max_memories]:
+                text = (getattr(item, "text", "") or "").strip()
+                if not text:
+                    continue
+                rtype = getattr(item, "type", None)
+                occurred = getattr(item, "occurred_start", None)
+                prefix = f"[{rtype}]" if rtype else ""
+                when = f" ({occurred})" if occurred else ""
+                lines.append(f"- {prefix}{text}{when}".replace("[]", ""))
+            formatted = "\n".join(lines)
+            if formatted:
+                return formatted
+            _log(context, "Recall returned results but no usable text", "debug")
+            return None
+
+        # Fallback: legacy attributes or raw string, guarded against repr dumps
+        for attr in ("content", "text"):
+            val = getattr(result, attr, None)
+            if val:
+                return val
+        result_str = str(result)
+        # Guard against raw pydantic repr dumps (e.g. "results=[RecallResult(...)")
+        if result_str and result_str != "None" and not result_str.startswith("results=["):
+            return result_str
+        return None
 
     except Exception as e:
         error_msg = str(e)
