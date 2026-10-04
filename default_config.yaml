@@ -36,15 +36,15 @@ hindsight_recall_enabled: true
 hindsight_reflect_enabled: true
 
 # Recall settings
-hindsight_recall_max_tokens: 4096
-hindsight_recall_budget: "mid"
+hindsight_recall_max_tokens: 1500
+hindsight_recall_budget: "low"
 
 # Reflect settings
 hindsight_reflect_budget: "low"
 hindsight_reflect_max_tokens: 500
 
 # Cache TTL for reflect context (seconds)
-hindsight_cache_ttl: 120
+hindsight_cache_ttl: 600
 
 # Debug logging
 hindsight_debug: false
