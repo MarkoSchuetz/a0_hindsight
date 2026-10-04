@@ -7,6 +7,7 @@ recall, and reflect operations for persistent memory augmentation.
 Uses async variants (aretain, arecall, areflect) since Agent Zero
 extensions run inside an async event loop.
 """
+import asyncio
 import os
 import sys
 import time
@@ -41,6 +42,7 @@ except ImportError:
 # Module-level caches
 _reflect_cache: Dict[str, tuple] = {}  # bank_id -> (timestamp, content)
 _recall_cache: Dict[str, tuple] = {}  # bank_id:query -> (timestamp, content)
+_client_cache: Dict[Any, Any] = {}  # (loop id, base_url) -> Hindsight client
 
 # Default configuration values
 _DEFAULTS: Dict[str, Any] = {
@@ -270,11 +272,14 @@ def is_configured(context: Optional["AgentContext"] = None) -> bool:
 
 
 def get_client(context: Optional["AgentContext"] = None) -> Optional[Any]:
-    """Create a fresh Hindsight client for this call.
-    
-    A new client is created each time to avoid stale aiohttp ClientSession
-    issues across different async contexts or event loops (see GitHub #1).
+    """Return a cached Hindsight client for the current event loop.
+
+    One client is reused per (event loop, base_url) pair. Keying on the
+    running loop avoids stale aiohttp ClientSession issues across different
+    async contexts or event loops (see GitHub #1), while avoiding the
+    TCP/TLS setup cost of a fresh client on every recall/reflect call.
     """
+    global _client_cache
     if not HINDSIGHT_AVAILABLE:
         return None
 
@@ -284,6 +289,18 @@ def get_client(context: Optional["AgentContext"] = None) -> Optional[Any]:
         print(f"[HINDSIGHT DEBUG] get_client(): base_url is None. agent={agent is not None}, env={bool(os.environ.get('HINDSIGHT_BASE_URL'))}")
         return None
 
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None  # no running loop (should not happen in extensions)
+
+    # Key on the loop object itself (hashable); holding a strong reference
+    # in the cache prevents id reuse after a loop is garbage collected.
+    cache_key = (loop, base_url)
+    cached = _client_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     api_key = get_api_key(context)
 
     try:
@@ -291,6 +308,7 @@ def get_client(context: Optional["AgentContext"] = None) -> Optional[Any]:
         if api_key:
             kwargs["api_key"] = api_key
         client = Hindsight(**kwargs)
+        _client_cache[cache_key] = client
         _log(context, f"Connected to Hindsight at: {base_url}", "util")
         return client
     except Exception as e:
@@ -561,3 +579,13 @@ def cleanup(context: Optional["AgentContext"] = None) -> None:
         clear_cache(bank_id)
     else:
         clear_cache()
+        # Best-effort close of cached Hindsight clients (aiohttp sessions)
+        global _client_cache
+        for client in list(_client_cache.values()):
+            try:
+                close = getattr(client, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
+        _client_cache = {}
