@@ -40,6 +40,7 @@ except ImportError:
 
 # Module-level caches
 _reflect_cache: Dict[str, tuple] = {}  # bank_id -> (timestamp, content)
+_recall_cache: Dict[str, tuple] = {}  # bank_id:query -> (timestamp, content)
 
 # Default configuration values
 _DEFAULTS: Dict[str, Any] = {
@@ -50,6 +51,7 @@ _DEFAULTS: Dict[str, Any] = {
     "hindsight_reflect_enabled": True,
     "hindsight_recall_max_tokens": 4096,
     "hindsight_recall_budget": "mid",
+    "hindsight_recall_cache_ttl": 60,
     "hindsight_reflect_budget": "low",
     "hindsight_reflect_max_tokens": 500,
     "hindsight_cache_ttl": 120,
@@ -402,6 +404,10 @@ async def recall_memories(context: "AgentContext", query: str, agent: Any = None
         return None
     bank_id = get_bank_id(context, agent=agent_for_cfg)
 
+    # Query cache: repeated identical queries within the TTL hit the cache
+    # instead of the server (recall runs every N-th loop iteration).
+    cache_ttl = int(config.get("hindsight_recall_cache_ttl", 60))
+
     try:
         # Validate and truncate query before sending
         # Hindsight service enforces a 500-token query limit.
@@ -411,7 +417,14 @@ async def recall_memories(context: "AgentContext", query: str, agent: Any = None
             return None
         
         safe_query = query.strip()[:1500]
-        
+
+        # Serve repeated identical queries from cache within the TTL
+        cache_key = f"{bank_id}:{safe_query}"
+        if cache_ttl > 0 and cache_key in _recall_cache:
+            cached_time, cached_content = _recall_cache[cache_key]
+            if time.time() - cached_time < cache_ttl:
+                return cached_content
+
         result = await client.arecall(
             bank_id=bank_id,
             query=safe_query,
@@ -437,6 +450,8 @@ async def recall_memories(context: "AgentContext", query: str, agent: Any = None
                 lines.append(f"- {prefix}{text}{when}".replace("[]", ""))
             formatted = "\n".join(lines)
             if formatted:
+                if cache_ttl > 0:
+                    _recall_cache[cache_key] = (time.time(), formatted)
                 return formatted
             _log(context, "Recall returned results but no usable text", "debug")
             return None
@@ -524,14 +539,19 @@ async def reflect_context(context: "AgentContext", query: str, agent: Any = None
 
 
 def clear_cache(bank_id: Optional[str] = None) -> None:
-    """Clear cached reflect contexts."""
+    """Clear cached reflect contexts and recall query results."""
     global _reflect_cache
+    global _recall_cache
     if bank_id:
         keys_to_remove = [k for k in _reflect_cache if k.startswith(f"{bank_id}:")]
         for k in keys_to_remove:
             del _reflect_cache[k]
+        keys_to_remove = [k for k in _recall_cache if k.startswith(f"{bank_id}:")]
+        for k in keys_to_remove:
+            del _recall_cache[k]
     else:
         _reflect_cache = {}
+        _recall_cache = {}
 
 
 def cleanup(context: Optional["AgentContext"] = None) -> None:

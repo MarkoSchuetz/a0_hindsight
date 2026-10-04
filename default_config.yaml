@@ -45,6 +45,8 @@ hindsight_reflect_max_tokens: 500
 
 # Cache TTL for reflect context (seconds)
 hindsight_cache_ttl: 600
+# TTL for the recall query cache (seconds); 0 disables caching
+hindsight_recall_cache_ttl: 60
 
 # Debug logging
 hindsight_debug: false

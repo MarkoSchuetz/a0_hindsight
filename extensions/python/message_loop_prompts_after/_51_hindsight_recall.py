@@ -84,7 +84,10 @@ class HindsightRecall(Extension):
                 log_item.update(heading="Insufficient query for Hindsight recall (need at least 3 chars)")
                 return
 
-            recall_result = await hindsight_helper.recall_memories(context, query, agent=self.agent)
+            recall_result = await asyncio.wait_for(
+                hindsight_helper.recall_memories(context, query, agent=self.agent),
+                timeout=SEARCH_TIMEOUT,
+            )
 
             if recall_result and recall_result.strip():
                 log_item.update(
